@@ -6391,6 +6391,7 @@ dependencies = [
  "jsonrpsee 0.24.7",
  "op-rbuilder-node-optimism",
  "rbuilder",
+ "rbuilder-bundle-pool-operations",
  "reth",
  "reth-cli-util",
  "reth-discv4",
