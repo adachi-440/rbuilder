@@ -7,7 +7,7 @@ import {RevertTransaction} from "../src/RevertTransaction.sol";
 contract RevertTransactionScript is Script {
     RevertTransaction public revertTransaction;
     string public SALT = "Revert";
-    address public REVERT_TRANSACTION_ADDRESS = 0x11c64a2c5B251Af980e38fF7a1C8e33dB7E479Aa;
+    address public REVERT_TRANSACTION_ADDRESS = 0xbdcC41Baf7C26D8Ea5DaEc4338EbDbADDdd937EC;
 
     function setUp() public {}
 
