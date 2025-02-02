@@ -1,4 +1,5 @@
 pub mod base_config;
+pub mod block_list_provider;
 pub mod block_output;
 pub mod building;
 pub mod cli;
@@ -18,26 +19,32 @@ use crate::{
         simulation::OrderSimulationPool,
         watchdog::spawn_watchdog_thread,
     },
+    primitives::{MempoolTx, Order, TransactionSignedEcRecoveredWithBlobs},
     provider::StateProviderFactory,
     telemetry::inc_active_slots,
     utils::{
         error_storage::spawn_error_storage_writer, provider_head_state::ProviderHeadState, Signer,
     },
 };
-use ahash::HashSet;
 use alloy_consensus::Header;
 use alloy_primitives::{Address, B256};
+use block_list_provider::BlockListProvider;
 use building::BlockBuildingPool;
 use eyre::Context;
 use jsonrpsee::RpcModule;
 use order_input::ReplaceableOrderPoolCommand;
 use payload_events::MevBoostSlotData;
+use reth::transaction_pool::{
+    BlobStore, EthPooledTransaction, Pool, TransactionListenerKind, TransactionOrdering,
+    TransactionPool, TransactionValidator,
+};
 use reth_chainspec::ChainSpec;
+use reth_primitives::TransactionSignedEcRecovered;
 use std::{cmp::min, fmt::Debug, path::PathBuf, sync::Arc, time::Duration};
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone)]
 pub struct TimingsConfig {
@@ -103,7 +110,7 @@ where
 
     pub coinbase_signer: Signer,
     pub extra_data: Vec<u8>,
-    pub blocklist: HashSet<Address>,
+    pub blocklist_provider: Arc<dyn BlockListProvider>,
 
     pub global_cancellation: CancellationToken,
 
@@ -131,7 +138,10 @@ where
     }
 
     pub async fn run(self) -> eyre::Result<()> {
-        info!("Builder block list size: {}", self.blocklist.len(),);
+        info!(
+            "Builder initial block list size: {}",
+            self.blocklist_provider.get_blocklist()?.len(),
+        );
         info!(
             "Builder coinbase address: {:?}",
             self.coinbase_signer.address
@@ -194,7 +204,8 @@ where
         };
 
         while let Some(payload) = payload_events_channel.recv().await {
-            if self.blocklist.contains(&payload.fee_recipient()) {
+            let blocklist = self.blocklist_provider.get_blocklist()?;
+            if blocklist.contains(&payload.fee_recipient()) {
                 warn!(
                     slot = payload.slot(),
                     "Fee recipient is in blocklist: {:?}",
@@ -254,14 +265,14 @@ where
 
             inc_active_slots();
 
-            let root_hasher = Arc::from(self.provider.root_hasher(payload.parent_block_hash()));
+            let root_hasher = Arc::from(self.provider.root_hasher(payload.parent_block_hash())?);
 
             if let Some(block_ctx) = BlockBuildingContext::from_attributes(
                 payload.payload_attributes_event.clone(),
                 &parent_header,
-                self.coinbase_signer.clone(),
+                self.coinbase_signer,
                 self.chain_chain_spec.clone(),
-                self.blocklist.clone(),
+                blocklist.clone(),
                 Some(payload.suggested_gas_limit),
                 self.extra_data.clone(),
                 None,
@@ -288,6 +299,43 @@ where
                 .map_err(|err| warn!("Job handle await error: {:?}", err))
                 .unwrap_or_default();
         }
+        Ok(())
+    }
+
+    /// Connect the builder to a reth [`TransactionPool`].
+    ///
+    /// This will
+    /// 1. Add pending and queued transactions to the [`OrderPool`]
+    /// 2. Subscribe to the pool directly, so the builder is not reliant on
+    ///    IPC to be notified of new transactions.
+    pub async fn connect_to_transaction_pool<V, T, S>(
+        &self,
+        pool: Pool<V, T, S>,
+    ) -> Result<(), eyre::Error>
+    where
+        V: TransactionValidator<Transaction = EthPooledTransaction> + 'static,
+        T: TransactionOrdering<Transaction = <V as TransactionValidator>::Transaction>,
+        S: BlobStore,
+    {
+        // Initialize the orderpool with every item in the reth pool.
+        for tx in pool
+            .all_transactions()
+            .pending_recovered()
+            .chain(pool.all_transactions().queued_recovered())
+        {
+            try_send_to_orderpool(tx, self.orderpool_sender.clone(), pool.clone()).await;
+        }
+
+        // Subscribe to new transactions in-process.
+        let mut recv = pool.new_transactions_listener_for(TransactionListenerKind::All);
+        let orderpool_sender = self.orderpool_sender.clone();
+        tokio::spawn(async move {
+            while let Some(e) = recv.recv().await {
+                let tx = e.transaction.transaction.transaction().clone();
+                try_send_to_orderpool(tx, orderpool_sender.clone(), pool.clone()).await;
+            }
+        });
+
         Ok(())
     }
 
@@ -329,4 +377,32 @@ where
         }
     }
     Err(eyre::eyre!("Block header not found"))
+}
+
+/// Attempts to forward a [`TransactionSignedEcRecovered`] to an orderpool.
+///
+/// Helper for [`LiveBuilder::connect_to_transaction_pool`].
+///
+/// Errors are handled internally with a log.
+async fn try_send_to_orderpool<V, T, S>(
+    tx: TransactionSignedEcRecovered,
+    orderpool_sender: mpsc::Sender<ReplaceableOrderPoolCommand>,
+    pool: Pool<V, T, S>,
+) where
+    V: TransactionValidator<Transaction = EthPooledTransaction> + 'static,
+    T: TransactionOrdering<Transaction = <V as TransactionValidator>::Transaction>,
+    S: BlobStore,
+{
+    match TransactionSignedEcRecoveredWithBlobs::try_from_tx_without_blobs_and_pool(tx, pool) {
+        Ok(tx) => {
+            let order = Order::Tx(MempoolTx::new(tx));
+            let command = ReplaceableOrderPoolCommand::Order(order);
+            if let Err(e) = orderpool_sender.send(command).await {
+                error!("Error sending order to orderpool: {:#}", e);
+            }
+        }
+        Err(e) => {
+            error!("Error creating order from transaction: {:#}", e);
+        }
+    }
 }

@@ -1,6 +1,6 @@
 //! App to benchmark/test the tx block execution.
-//! This only works when reth node is stopped and the chain moved forward form its synced state
-//! It downloads block aftre the last one synced and re-executes all the txs in it.
+//! This only works when reth node is stopped and the chain moved forward from its synced state
+//! It downloads block after the last one synced and re-executes all the txs in it.
 use alloy_provider::Provider;
 use alloy_rpc_types::BlockTransactionsKind;
 use clap::Parser;
@@ -43,7 +43,7 @@ async fn main() -> eyre::Result<()> {
 
     let chain_spec = config.base_config().chain_spec()?;
 
-    let provider_factory = config.base_config().create_provider_factory()?;
+    let provider_factory = config.base_config().create_provider_factory(false)?;
 
     let last_block = provider_factory.last_block_number()?;
 
@@ -71,7 +71,7 @@ async fn main() -> eyre::Result<()> {
         coinbase,
         suggested_fee_recipient,
         None,
-        Arc::from(provider_factory.root_hasher(parent_hash)),
+        Arc::from(provider_factory.root_hasher(parent_hash)?),
     );
 
     let state_provider = Arc::<dyn StateProvider>::from(

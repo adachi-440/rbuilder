@@ -129,7 +129,7 @@ impl TestSetup {
             .to(to)
             .value(value);
         let tx = self.test_chain.sign_tx(args)?;
-        let tx_hash = tx.hash;
+        let tx_hash = tx.hash();
         self.order_builder.add_tx(
             TransactionSignedEcRecoveredWithBlobs::new_no_blobs(tx).unwrap(),
             revert_behavior,
@@ -139,7 +139,7 @@ impl TestSetup {
 
     fn add_tx(&mut self, args: TxArgs, revert_behavior: TxRevertBehavior) -> eyre::Result<TxHash> {
         let tx = self.test_chain.sign_tx(args)?;
-        let tx_hash = tx.hash;
+        let tx_hash = tx.hash();
         self.order_builder.add_tx(
             TransactionSignedEcRecoveredWithBlobs::new_no_blobs(tx).unwrap(),
             revert_behavior,
@@ -235,7 +235,7 @@ impl TestSetup {
         res.expect("Order commit failed")
     }
 
-    pub fn commit_order_err(&mut self, expected_error: &str) {
+    pub fn commit_order_err_check_text(&mut self, expected_error: &str) {
         let res = self.try_commit_order().expect("Failed to commit order");
         match res {
             Ok(_) => panic!("expected error, result: {:#?}", res),
@@ -251,24 +251,16 @@ impl TestSetup {
         }
     }
 
-    /// Name a little confusing: We expect a ExecutionError::OrderError(OrderError(expected_error))
-    pub fn commit_order_err_order_error(&mut self, expected_error: &OrderErr) {
+    /// Name a little confusing: We expect a ExecutionError::OrderError(e) and err_check(e) is ran on the error.
+    pub fn commit_order_err_check<F: FnOnce(OrderErr)>(&mut self, err_check: F) {
         let res = self.try_commit_order().expect("Failed to commit order");
         match res {
             Ok(_) => panic!("expected error,got ok result: {:#?}", res),
             Err(err) => {
                 if let ExecutionError::OrderError(order_error) = err {
-                    if *expected_error != order_error {
-                        panic!(
-                            "unexpected OrderErr error: {}, expected: {}",
-                            order_error, expected_error
-                        );
-                    }
+                    err_check(order_error);
                 } else {
-                    panic!(
-                        "unexpected non OrderErr error: {}, expected: {}",
-                        err, expected_error
-                    );
+                    panic!("unexpected non OrderErr error: {}", err);
                 }
             }
         }

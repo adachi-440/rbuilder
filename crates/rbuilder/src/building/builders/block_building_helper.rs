@@ -171,7 +171,7 @@ where
         check_block_hash_reader_health(last_committed_block, &state_provider)?;
 
         let fee_recipient_balance_start = state_provider
-            .account_balance(building_ctx.attributes.suggested_fee_recipient)?
+            .account_balance(&building_ctx.attributes.suggested_fee_recipient)?
             .unwrap_or_default();
         let mut partial_block = PartialBlock::new(discard_txs, enforce_sorting)
             .with_tracer(GasUsedSimulationTracer::default());
@@ -214,7 +214,7 @@ where
         built_block_trace: &BuiltBlockTrace,
         sim_gas_used: u64,
     ) {
-        let txs = finalized_block.sealed_block.body.transactions.len();
+        let txs = finalized_block.sealed_block.body().transactions.len();
         let gas_used = finalized_block.sealed_block.gas_used;
         let blobs = finalized_block.txs_blob_sidecars.len();
 
@@ -251,6 +251,7 @@ where
         &mut self,
         payout_tx_value: Option<U256>,
     ) -> Result<(), BlockBuildingHelperError> {
+        self.built_block_trace.coinbase_reward = self.partial_block.coinbase_profit;
         let (bid_value, true_value) = if let (Some(payout_tx_gas), Some(payout_tx_value)) =
             (self.payout_tx_gas, payout_tx_value)
         {

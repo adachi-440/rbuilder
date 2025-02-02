@@ -9,6 +9,7 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 pub mod reth_prov;
+pub mod state_provider_factory_from_provider_factory;
 
 /// Main trait to interact with the chain data.
 /// Allows to create different backends for chain data access without implementing lots of interfaces as would happen with reth_provider::StateProviderFactory
@@ -30,7 +31,7 @@ pub trait StateProviderFactory: Send + Sync {
 
     fn last_block_number(&self) -> ProviderResult<BlockNumber>;
 
-    fn root_hasher(&self, parent_hash: B256) -> Box<dyn RootHasher>;
+    fn root_hasher(&self, parent_hash: B256) -> ProviderResult<Box<dyn RootHasher>>;
 }
 
 /// trait that computes the roothash for a new block assuming a predefine parent block (given in StateProviderFactory::root_hasher)
