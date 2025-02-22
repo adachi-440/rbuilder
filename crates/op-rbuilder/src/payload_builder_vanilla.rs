@@ -43,7 +43,7 @@ use revm::{
     },
     Database, DatabaseCommit,
 };
-use tracing::{info, trace, warn};
+use tracing::{info, debug, trace, warn};
 
 use op_alloy_consensus::{OpDepositReceipt, OpTxType, OpTypedTransaction};
 use reth_optimism_payload_builder::{
@@ -97,22 +97,35 @@ where
         best_payload: BlockCell<Self::BuiltPayload>,
     ) -> Result<(), PayloadBuilderError> {
         let pool = args.pool.clone();
+        let all_transactions: reth_transaction_pool::AllPoolTransactions<<Pool as TransactionPool>::Transaction> = pool.all_transactions();
+        debug!(target: "payload_builder", "All Transactions: {:?}", all_transactions);
         let block_build_start_time = Instant::now();
+        let p = args.pool.clone();
 
         match self.build_payload(args, |attrs| {
             #[allow(clippy::unit_arg)]
             self.best_transactions.best_transactions(pool, attrs)
         })? {
             BuildOutcome::Better { payload, .. } => {
-                best_payload.set(payload);
+                let reverted_payload: OpBuiltPayload = payload.op_payload;
+                let reverted_transactions: Vec<OpTransactionSigned> = payload.reverted_transactions;
+
+                best_payload.set(reverted_payload);
                 self.metrics
                     .total_block_built_duration
                     .record(block_build_start_time.elapsed());
                 self.metrics.block_built_success.increment(1);
+
+                p.remove_transactions(
+                    reverted_transactions
+                        .iter()
+                        .map(|tx| tx.hash.get().expect("Hash should be initialized").clone())
+                        .collect()
+                );
                 Ok(())
             }
             BuildOutcome::Freeze(payload) => {
-                best_payload.set(payload);
+                best_payload.set(payload.op_payload);
                 self.metrics
                     .total_block_built_duration
                     .record(block_build_start_time.elapsed());
@@ -146,7 +159,7 @@ where
         &self,
         args: BuildArguments<Pool, Client, OpPayloadBuilderAttributes, OpBuiltPayload>,
         best: impl FnOnce(BestTransactionsAttributes) -> Txs + Send + Sync + 'a,
-    ) -> Result<BuildOutcome<OpBuiltPayload>, PayloadBuilderError>
+    ) -> Result<BuildOutcome<RevertedPayload>, PayloadBuilderError>
     where
         Client: StateProviderFactory + ChainSpecProvider<ChainSpec = OpChainSpec>,
         Pool: TransactionPool,
@@ -162,7 +175,7 @@ where
 
         let BuildArguments {
             client,
-            pool: _,
+            pool,
             mut cached_reads,
             config,
             cancel,
@@ -180,7 +193,6 @@ where
             builder_signer: self.builder_signer,
             metrics: Default::default(),
         };
-
         let builder = OpBuilder::new(best);
 
         let state_provider = client.state_by_block_hash(ctx.parent().hash())?;
@@ -350,11 +362,11 @@ where
         self,
         mut state: State<DB>,
         ctx: OpPayloadBuilderCtx<EvmConfig>,
-    ) -> Result<BuildOutcomeKind<OpBuiltPayload>, PayloadBuilderError>
+    ) -> Result<BuildOutcomeKind<RevertedPayload>, PayloadBuilderError>
     where
         EvmConfig: ConfigureEvm<Header = Header, Transaction = OpTransactionSigned>,
         DB: Database<Error = ProviderError> + AsRef<P>,
-        P: StateRootProvider + HashedPostStateProvider,
+        P: StateRootProvider + HashedPostStateProvider
     {
         let ExecutedPayload {
             info,
@@ -465,7 +477,7 @@ where
 
         let no_tx_pool = ctx.attributes().no_tx_pool;
 
-        let payload = OpBuiltPayload::new(
+        let op_payload = OpBuiltPayload::new(
             ctx.payload_id(),
             sealed_block,
             info.total_fees,
@@ -474,9 +486,16 @@ where
             Some(executed),
         );
 
+        let p = op_payload.clone();
+
+        let payload = RevertedPayload {
+            op_payload,
+            reverted_transactions: info.invalid_transactions,
+        };
+
         ctx.metrics
             .payload_byte_size
-            .record(payload.block().size() as f64);
+            .record(p.block().size() as f64);
 
         if no_tx_pool {
             // if `no_tx_pool` is set only transactions from the payload attributes will be included
@@ -523,11 +542,21 @@ pub struct ExecutedPayload {
     pub withdrawals_root: Option<B256>,
 }
 
+pub struct RevertedPayload {
+    /// Tracked execution info
+    pub op_payload: OpBuiltPayload,
+    /// Reverted transactions.
+    pub reverted_transactions: Vec<OpTransactionSigned>,
+}
+
+
 /// This acts as the container for executed transactions and its byproducts (receipts, gas used)
 #[derive(Default, Debug)]
 pub struct ExecutionInfo {
     /// All executed transactions (unrecovered).
     pub executed_transactions: Vec<OpTransactionSigned>,
+    /// All invalid transactions (unrecovered).
+    pub invalid_transactions: Vec<OpTransactionSigned>,
     /// The recovered senders for the executed transactions.
     pub executed_senders: Vec<Address>,
     /// The transaction receipts
@@ -543,6 +572,7 @@ impl ExecutionInfo {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             executed_transactions: Vec::with_capacity(capacity),
+            invalid_transactions: Vec::with_capacity(capacity),
             executed_senders: Vec::with_capacity(capacity),
             receipts: Vec::with_capacity(capacity),
             cumulative_gas_used: 0,
@@ -956,6 +986,16 @@ where
                     }
                 }
             };
+
+            debug!(target: "payload_builder", "Transaction is successful: {}", result.is_success());
+
+            if !result.is_success() {
+                debug!(target: "payload_builder", "skipping revert transaction");
+                debug!(target: "payload_builder", "tx: {:?}", tx);
+                info.invalid_transactions.push(tx.into_tx());
+                // best_txs.mark_invalid(tx.signer(), tx.nonce());
+                continue;
+            }
 
             self.metrics
                 .tx_simulation_duration
