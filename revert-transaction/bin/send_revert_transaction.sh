@@ -2,8 +2,6 @@ cast send 0xbdcC41Baf7C26D8Ea5DaEc4338EbDbADDdd937EC "revertTransaction()" --pri
 
 cast send 0xbdcC41Baf7C26D8Ea5DaEc4338EbDbADDdd937EC "revertTransaction()" --private-key 0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6 --rpc-url http://localhost:8547 --legacy &
 
-cast send 0xbdcC41Baf7C26D8Ea5DaEc4338EbDbADDdd937EC "revertTransaction()" --private-key 0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba --rpc-url http://localhost:8547 --legacy &
-
 
 wait
 

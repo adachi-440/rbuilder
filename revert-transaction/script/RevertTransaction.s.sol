@@ -18,18 +18,4 @@ contract RevertTransactionScript is Script {
 
         vm.stopBroadcast();
     }
-
-    function sendRevertTransaction() public {
-        vm.startBroadcast();
-        revertTransaction = RevertTransaction(REVERT_TRANSACTION_ADDRESS);
-        revertTransaction.revertTransaction();
-        vm.stopBroadcast();
-    }
-
-    function sendSuccessTransaction() public {
-        vm.startBroadcast();
-        revertTransaction = RevertTransaction(REVERT_TRANSACTION_ADDRESS);
-        revertTransaction.successTransaction();
-        vm.stopBroadcast();
-    }
 }
