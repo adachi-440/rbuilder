@@ -100,23 +100,23 @@ where
         let all_transactions: reth_transaction_pool::AllPoolTransactions<<Pool as TransactionPool>::Transaction> = pool.all_transactions();
         debug!(target: "payload_builder", "All Transactions: {:?}", all_transactions);
         let block_build_start_time = Instant::now();
-        let p = args.pool.clone();
 
         match self.build_payload(args, |attrs| {
             #[allow(clippy::unit_arg)]
             self.best_transactions.best_transactions(pool, attrs)
         })? {
             BuildOutcome::Better { payload, .. } => {
-                let reverted_payload: OpBuiltPayload = payload.op_payload;
-                let reverted_transactions: Vec<OpTransactionSigned> = payload.reverted_transactions;
+                let op_payload = payload.op_payload;
+                let reverted_transactions = payload.reverted_transactions;
 
-                best_payload.set(reverted_payload);
+                best_payload.set(op_payload);
                 self.metrics
                     .total_block_built_duration
                     .record(block_build_start_time.elapsed());
                 self.metrics.block_built_success.increment(1);
 
-                p.remove_transactions(
+                let pool_for_removal = args.pool.clone();
+                pool_for_removal.remove_transactions(
                     reverted_transactions
                         .iter()
                         .map(|tx| tx.hash.get().expect("Hash should be initialized").clone())
@@ -987,16 +987,6 @@ where
                 }
             };
 
-            debug!(target: "payload_builder", "Transaction is successful: {}", result.is_success());
-
-            if !result.is_success() {
-                debug!(target: "payload_builder", "skipping revert transaction");
-                debug!(target: "payload_builder", "tx: {:?}", tx);
-                info.invalid_transactions.push(tx.into_tx());
-                // best_txs.mark_invalid(tx.signer(), tx.nonce());
-                continue;
-            }
-
             self.metrics
                 .tx_simulation_duration
                 .record(tx_simulation_start_time.elapsed());
@@ -1006,6 +996,10 @@ where
                 num_txs_simulated_success += 1;
             } else {
                 num_txs_simulated_fail += 1;
+
+                // if transaction reverted, we can skip it
+                info.invalid_transactions.push(tx.into_tx());
+                continue;
             }
             self.metrics
                 .payload_num_tx_simulated
